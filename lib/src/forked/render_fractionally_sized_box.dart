@@ -1,53 +1,33 @@
-import 'package:flutter/rendering.dart';
+import 'package:flutter/rendering.dart' as rendering;
+import 'package:flutter/rendering.dart' hide RenderFractionallySizedOverflowBox;
 
 import '../pixel_snap.dart';
 import '../pixel_snap_ext.dart';
 
-/// Sizes its child to a fraction of the total available space.
+/// Pixel-snap aware version of [rendering.RenderFractionallySizedOverflowBox].
 ///
-/// For both its width and height, this render object imposes a tight
-/// constraint on its child that is a multiple (typically less than 1.0) of the
-/// maximum constraint it received from its parent on that axis. If the factor
-/// for a given axis is null, then the constraints from the parent are just
-/// passed through instead.
-///
-/// It then tries to size itself to the size of its child. Where this is not
-/// possible (e.g. if the constraints from the parent are themselves tight), the
-/// child is aligned according to [alignment].
-class RenderFractionallySizedOverflowBox extends RenderAligningShiftedBox {
-  /// Creates a render box that sizes its child to a fraction of the total available space.
-  ///
-  /// If non-null, the [widthFactor] and [heightFactor] arguments must be
-  /// non-negative.
-  ///
-  /// The [alignment] must not be null.
-  ///
-  /// The [textDirection] must be non-null if the [alignment] is
-  /// direction-sensitive.
+/// Extends Flutter's implementation to add pixel snapping to constraints
+/// and alignment.
+class RenderFractionallySizedOverflowBox extends rendering.RenderFractionallySizedOverflowBox {
   RenderFractionallySizedOverflowBox({
     super.child,
-    double? widthFactor,
-    double? heightFactor,
+    super.widthFactor,
+    super.heightFactor,
     required AlignmentGeometry alignment,
     required PixelSnap pixelSnap,
     super.textDirection,
-  })  : _widthFactor = widthFactor,
-        _heightFactor = heightFactor,
-        _pixelSnap = pixelSnap,
+  })  : _pixelSnap = pixelSnap,
         _originalAlignment = alignment,
-        super(alignment: alignment.pixelSnap(pixelSnap)) {
-    assert(_widthFactor == null || _widthFactor! >= 0.0);
-    assert(_heightFactor == null || _heightFactor! >= 0.0);
-  }
+        super(alignment: alignment.pixelSnap(pixelSnap));
 
   PixelSnap _pixelSnap;
   AlignmentGeometry _originalAlignment;
 
   PixelSnap get pixelSnap => _pixelSnap;
 
-  set pixelSnap(PixelSnap pixelSnap) {
-    if (_pixelSnap != pixelSnap) {
-      _pixelSnap = pixelSnap;
+  set pixelSnap(PixelSnap value) {
+    if (_pixelSnap != value) {
+      _pixelSnap = value;
       alignment = _originalAlignment;
       markNeedsLayout();
     }
@@ -59,50 +39,18 @@ class RenderFractionallySizedOverflowBox extends RenderAligningShiftedBox {
     super.alignment = value.pixelSnap(_pixelSnap);
   }
 
-  /// If non-null, the factor of the incoming width to use.
-  ///
-  /// If non-null, the child is given a tight width constraint that is the max
-  /// incoming width constraint multiplied by this factor. If null, the child is
-  /// given the incoming width constraints.
-  double? get widthFactor => _widthFactor;
-  double? _widthFactor;
-  set widthFactor(double? value) {
-    assert(value == null || value >= 0.0);
-    if (_widthFactor == value) {
-      return;
-    }
-    _widthFactor = value;
-    markNeedsLayout();
-  }
-
-  /// If non-null, the factor of the incoming height to use.
-  ///
-  /// If non-null, the child is given a tight height constraint that is the max
-  /// incoming width constraint multiplied by this factor. If null, the child is
-  /// given the incoming width constraints.
-  double? get heightFactor => _heightFactor;
-  double? _heightFactor;
-  set heightFactor(double? value) {
-    assert(value == null || value >= 0.0);
-    if (_heightFactor == value) {
-      return;
-    }
-    _heightFactor = value;
-    markNeedsLayout();
-  }
-
-  BoxConstraints _getInnerConstraints(BoxConstraints constraints) {
+  BoxConstraints _getInnerConstraintsPixelSnapped(BoxConstraints constraints) {
     double minWidth = constraints.minWidth;
     double maxWidth = constraints.maxWidth;
-    if (_widthFactor != null) {
-      final double width = maxWidth * _widthFactor!;
+    if (widthFactor != null) {
+      final double width = maxWidth * widthFactor!;
       minWidth = width;
       maxWidth = width;
     }
     double minHeight = constraints.minHeight;
     double maxHeight = constraints.maxHeight;
-    if (_heightFactor != null) {
-      final double height = maxHeight * _heightFactor!;
+    if (heightFactor != null) {
+      final double height = maxHeight * heightFactor!;
       minHeight = height;
       maxHeight = height;
     }
@@ -120,12 +68,11 @@ class RenderFractionallySizedOverflowBox extends RenderAligningShiftedBox {
     if (child == null) {
       result = super.computeMinIntrinsicWidth(height);
     } else {
-      // the following line relies on double.infinity absorption
       result = child!.getMinIntrinsicWidth(
-          (height * (_heightFactor ?? 1.0)).pixelSnap(pixelSnap));
+          (height * (heightFactor ?? 1.0)).pixelSnap(pixelSnap));
     }
     assert(result.isFinite);
-    return (result / (_widthFactor ?? 1.0)).pixelSnap(pixelSnap);
+    return (result / (widthFactor ?? 1.0)).pixelSnap(pixelSnap);
   }
 
   @override
@@ -134,12 +81,11 @@ class RenderFractionallySizedOverflowBox extends RenderAligningShiftedBox {
     if (child == null) {
       result = super.computeMaxIntrinsicWidth(height);
     } else {
-      // the following line relies on double.infinity absorption
       result = child!.getMaxIntrinsicWidth(
-          (height * (_heightFactor ?? 1.0)).pixelSnap(pixelSnap));
+          (height * (heightFactor ?? 1.0)).pixelSnap(pixelSnap));
     }
     assert(result.isFinite);
-    return (result / (_widthFactor ?? 1.0)).pixelSnap(pixelSnap);
+    return (result / (widthFactor ?? 1.0)).pixelSnap(pixelSnap);
   }
 
   @override
@@ -148,12 +94,11 @@ class RenderFractionallySizedOverflowBox extends RenderAligningShiftedBox {
     if (child == null) {
       result = super.computeMinIntrinsicHeight(width);
     } else {
-      // the following line relies on double.infinity absorption
       result = child!.getMinIntrinsicHeight(
-          (width * (_widthFactor ?? 1.0)).pixelSnap(pixelSnap));
+          (width * (widthFactor ?? 1.0)).pixelSnap(pixelSnap));
     }
     assert(result.isFinite);
-    return (result / (_heightFactor ?? 1.0)).pixelSnap(pixelSnap);
+    return (result / (heightFactor ?? 1.0)).pixelSnap(pixelSnap);
   }
 
   @override
@@ -162,43 +107,33 @@ class RenderFractionallySizedOverflowBox extends RenderAligningShiftedBox {
     if (child == null) {
       result = super.computeMaxIntrinsicHeight(width);
     } else {
-      // the following line relies on double.infinity absorption
       result = child!.getMaxIntrinsicHeight(
-          (width * (_widthFactor ?? 1.0)).pixelSnap(pixelSnap));
+          (width * (widthFactor ?? 1.0)).pixelSnap(pixelSnap));
     }
     assert(result.isFinite);
-    return (result / (_heightFactor ?? 1.0)).pixelSnap(pixelSnap);
+    return (result / (heightFactor ?? 1.0)).pixelSnap(pixelSnap);
   }
 
   @override
-  Size computeDryLayout(BoxConstraints constraints) {
+  Size computeDryLayout(covariant BoxConstraints constraints) {
     if (child != null) {
       final Size childSize =
-          child!.getDryLayout(_getInnerConstraints(constraints));
+          child!.getDryLayout(_getInnerConstraintsPixelSnapped(constraints));
       return constraints.constrain(childSize);
     }
     return constraints
-        .constrain(_getInnerConstraints(constraints).constrain(Size.zero));
+        .constrain(_getInnerConstraintsPixelSnapped(constraints).constrain(Size.zero));
   }
 
   @override
   void performLayout() {
     if (child != null) {
-      child!.layout(_getInnerConstraints(constraints), parentUsesSize: true);
+      child!.layout(_getInnerConstraintsPixelSnapped(constraints), parentUsesSize: true);
       size = constraints.constrain(child!.size);
       alignChild();
     } else {
       size = constraints
-          .constrain(_getInnerConstraints(constraints).constrain(Size.zero));
+          .constrain(_getInnerConstraintsPixelSnapped(constraints).constrain(Size.zero));
     }
-  }
-
-  @override
-  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
-    super.debugFillProperties(properties);
-    properties.add(
-        DoubleProperty('widthFactor', _widthFactor, ifNull: 'pass-through'));
-    properties.add(
-        DoubleProperty('heightFactor', _heightFactor, ifNull: 'pass-through'));
   }
 }

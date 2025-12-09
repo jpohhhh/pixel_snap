@@ -8,15 +8,36 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart' as widgets;
-import 'package:flutter/rendering.dart' show SelectionRegistrar;
+import 'package:flutter/rendering.dart'
+    show
+        SelectionRegistrar,
+        OverflowBoxFit,
+        SelectionResult,
+        SelectionEvent,
+        SelectionGeometry,
+        Selectable,
+        SelectionEdgeUpdateEvent,
+        SelectParagraphSelectionEvent,
+        TextGranularity,
+        SelectedContentRange,
+        SelectionEventType,
+        ClearSelectionEvent;
 import 'dart:ui' as ui;
+import 'dart:math' show min, max;
 import 'dart:io' show File;
+import 'package:flutter/src/painting/_web_image_info_io.dart'
+    if (dart.library.js_interop) 'package:flutter/src/painting/_web_image_info_web.dart';
+import 'package:flutter/src/widgets/_web_image_io.dart'
+    if (dart.library.js_interop) 'package:flutter/src/widgets/_web_image_web.dart';
 export 'package:flutter/widgets.dart' hide RawImage, ScrollController;
 import '../forked/render_flex.dart';
 import '../forked/render_fractionally_sized_box.dart';
 import '../forked/render_paragraph.dart';
 import '../forked/render_fitted_box.dart';
 import '../forked/raw_image.dart';
+
+const double _kSelectableVerticalComparingThreshold = 3.0;
+typedef _SelectionInfo = ({int contentLength, SelectedContentRange? range});
 
 /// A widget that aligns its child within itself and optionally sizes itself
 /// based on the child's size.
@@ -36,6 +57,7 @@ import '../forked/raw_image.dart';
 /// the width of this widget will always be twice its child's width.
 ///
 /// {@tool snippet}
+///
 /// The [Align] widget in this example uses one of the defined constants from
 /// [Alignment], [Alignment.topRight]. This places the [FlutterLogo] in the top
 /// right corner of the parent blue [Container].
@@ -67,6 +89,7 @@ import '../forked/raw_image.dart';
 /// each other.
 ///
 /// {@tool snippet}
+///
 /// The [Alignment] used in the following example defines two points:
 ///
 ///   * (0.2 * width of [FlutterLogo]/2 + width of [FlutterLogo]/2, 0.6 * height
@@ -103,6 +126,7 @@ import '../forked/raw_image.dart';
 /// {@end-tool}
 ///
 /// {@tool snippet}
+///
 /// The [FractionalOffset] used in the following example defines two points:
 ///
 ///   * (0.2 * width of [FlutterLogo], 0.6 * height of [FlutterLogo]) = (12.0, 36.0)
@@ -525,8 +549,8 @@ class DecoratedBox extends StatelessWidget {
 ///  * [Border], which has a sample which uses [Container] heavily.
 ///  * [Ink], which paints a [Decoration] on a [Material], allowing
 ///    [InkResponse] and [InkWell] splashes to paint over them.
-///  * Cookbook: [Animate the properties of a container](https://flutter.dev/docs/cookbook/animation/animated-container)
-///  * The [catalog of layout widgets](https://flutter.dev/widgets/layout/).
+///  * Cookbook: [Animate the properties of a container](https://docs.flutter.dev/cookbook/animation/animated-container)
+///  * The [catalog of layout widgets](https://docs.flutter.dev/ui/widgets/layout).
 class Container extends StatelessWidget {
   /// Creates a widget that combines common painting, positioning, and sizing widgets.
   ///
@@ -677,7 +701,9 @@ class Container extends StatelessWidget {
 ///
 /// This class is useful, for example, when unlimited width is available and
 /// you would like a child that would otherwise attempt to expand infinitely to
-/// instead size itself to a more reasonable width.
+/// instead size itself to a more reasonable width. Additionally, putting a
+/// [Column] inside an [IntrinsicWidth] will allow all [Column] children to be
+/// as wide as the widest child.
 ///
 /// The constraints that this widget passes to its child will adhere to the
 /// parent's constraints, so if the constraints are not large enough to satisfy
@@ -843,6 +869,7 @@ class OverflowBox extends StatelessWidget {
       this.maxWidth,
       this.minHeight,
       this.maxHeight,
+      this.fit = OverflowBoxFit.max,
       this.child});
 
   /// How to align the child.
@@ -881,6 +908,16 @@ class OverflowBox extends StatelessWidget {
   /// default) to use the constraint from the parent instead.
   final double? maxHeight;
 
+  /// The way to size the render object.
+  ///
+  /// This only affects scenario when the child does not indeed overflow.
+  /// If set to [OverflowBoxFit.deferToChild], the render object will size itself to
+  /// match the size of its child within the constraints of its parent or be
+  /// as small as the parent allows if no child is set. If set to
+  /// [OverflowBoxFit.max] (the default), the render object will size itself
+  /// to be as large as the parent allows.
+  final OverflowBoxFit fit;
+
   /// The widget below this widget in the tree.
   ///
   /// {@macro flutter.widgets.ProxyWidget.child}
@@ -895,6 +932,7 @@ class OverflowBox extends StatelessWidget {
       maxWidth: maxWidth?.pixelSnap(ps),
       minHeight: minHeight?.pixelSnap(ps),
       maxHeight: maxHeight?.pixelSnap(ps),
+      fit: fit,
       child: child,
     );
     return res;
@@ -1028,7 +1066,7 @@ class Padding extends StatelessWidget {
 ///  * [FittedBox], which sizes and positions its child widget to fit the parent
 ///    according to a given [BoxFit] discipline.
 ///  * The [catalog of layout widgets](https://flutter.dev/widgets/layout/).
-///  * [Understanding constraints](https://flutter.dev/docs/development/ui/layout/constraints),
+///  * [Understanding constraints](https://docs.flutter.dev/ui/layout/constraints),
 ///    an in-depth article about layout in Flutter.
 class SizedBox extends StatelessWidget {
   /// Creates a fixed size box. The [width] and [height] parameters can be null
@@ -1264,16 +1302,10 @@ class Positioned extends StatelessWidget {
       double? width,
       double? height,
       required Widget child}) {
-    double? left;
-    double? right;
-    switch (textDirection) {
-      case TextDirection.rtl:
-        left = end;
-        right = start;
-      case TextDirection.ltr:
-        left = start;
-        right = end;
-    }
+    final (double? left, double? right) = switch (textDirection) {
+      TextDirection.rtl => (end, start),
+      TextDirection.ltr => (start, end)
+    };
     return Positioned(
         key: key,
         left: left,
@@ -1634,7 +1666,10 @@ class Icon extends StatelessWidget {
       this.color,
       this.shadows,
       this.semanticLabel,
-      this.textDirection})
+      this.textDirection,
+      this.applyTextScaling,
+      this.blendMode,
+      this.fontWeight})
       : assert(fill == null || (0.0 <= fill && fill <= 1.0)),
         assert(weight == null || (0.0 < weight)),
         assert(opticalSize == null || (0.0 < opticalSize));
@@ -1764,7 +1799,7 @@ class Icon extends StatelessWidget {
 
   /// Semantic label for the icon.
   ///
-  /// Announced in accessibility modes (e.g TalkBack/VoiceOver).
+  /// Announced by assistive technologies (e.g TalkBack/VoiceOver).
   /// This label does not show in the UI.
   ///
   ///  * [SemanticsProperties.label], which is set to [semanticLabel] in the
@@ -1786,6 +1821,24 @@ class Icon extends StatelessWidget {
   /// specified, either directly using this property or using [Directionality].
   final TextDirection? textDirection;
 
+  /// Whether to scale the size of this widget using the ambient [MediaQuery]'s [TextScaler].
+  ///
+  /// This is specially useful when you have an icon associated with a text, as
+  /// scaling the text without scaling the icon would result in a confusing
+  /// interface.
+  ///
+  /// Defaults to the nearest [IconTheme]'s
+  /// [IconThemeData.applyTextScaling].
+  final bool? applyTextScaling;
+
+  /// The [BlendMode] to apply to the foreground of the icon.
+  ///
+  /// Defaults to [BlendMode.srcOver]
+  final BlendMode? blendMode;
+
+  /// The typeface thickness to use when painting the text (e.g., bold).
+  final FontWeight? fontWeight;
+
   @override
   Widget build(BuildContext context) {
     final ps = PixelSnap.of(context);
@@ -1800,6 +1853,9 @@ class Icon extends StatelessWidget {
       shadows: shadows,
       semanticLabel: semanticLabel,
       textDirection: textDirection,
+      applyTextScaling: applyTextScaling,
+      blendMode: blendMode,
+      fontWeight: fontWeight,
     );
     return res;
   }
@@ -1846,7 +1902,7 @@ class ImageIcon extends StatelessWidget {
 
   /// Semantic label for the icon.
   ///
-  /// Announced in accessibility modes (e.g TalkBack/VoiceOver).
+  /// Announced by assistive technologies (e.g TalkBack/VoiceOver).
   /// This label does not show in the UI.
   ///
   ///  * [SemanticsProperties.label], which is set to [semanticLabel] in the
@@ -2545,10 +2601,10 @@ class AnimatedPhysicalModel extends StatelessWidget {
   const AnimatedPhysicalModel(
       {super.key,
       required this.child,
-      required this.shape,
+      this.shape = BoxShape.rectangle,
       this.clipBehavior = Clip.none,
-      this.borderRadius = BorderRadius.zero,
-      required this.elevation,
+      this.borderRadius,
+      this.elevation = 0.0,
       required this.color,
       this.animateColor = true,
       required this.shadowColor,
@@ -2574,7 +2630,9 @@ class AnimatedPhysicalModel extends StatelessWidget {
   final Clip clipBehavior;
 
   /// The target border radius of the rounded corners for a rectangle shape.
-  final BorderRadius borderRadius;
+  ///
+  /// If null, treated as [BorderRadius.zero].
+  final BorderRadius? borderRadius;
 
   /// The target z-coordinate relative to the parent at which to place this
   /// physical object.
@@ -2612,7 +2670,7 @@ class AnimatedPhysicalModel extends StatelessWidget {
     Widget res = widgets.AnimatedPhysicalModel(
       shape: shape,
       clipBehavior: clipBehavior,
-      borderRadius: borderRadius.pixelSnap(ps),
+      borderRadius: borderRadius?.pixelSnap(ps),
       elevation: elevation.pixelSnap(ps),
       color: color,
       animateColor: animateColor,
@@ -2631,8 +2689,8 @@ class AnimatedPhysicalModel extends StatelessWidget {
 /// duration whenever the given child's size changes.
 ///
 /// {@tool dartpad}
-/// This example makes a [Container] react to being touched, causing the child
-/// of the [AnimatedSize] widget, here a [FlutterLogo], to animate.
+/// This example defines a widget that uses [AnimatedSize] to change the size of
+/// the [SizedBox] on tap.
 ///
 /// ** See code in examples/api/lib/widgets/animated_size/animated_size.0.dart **
 /// {@end-tool}
@@ -2649,7 +2707,8 @@ class AnimatedSize extends StatelessWidget {
       this.curve = Curves.linear,
       required this.duration,
       this.reverseDuration,
-      this.clipBehavior = Clip.hardEdge});
+      this.clipBehavior = Clip.hardEdge,
+      this.onEnd});
 
   /// The widget below this widget in the tree.
   ///
@@ -2696,6 +2755,12 @@ class AnimatedSize extends StatelessWidget {
   /// Defaults to [Clip.hardEdge].
   final Clip clipBehavior;
 
+  /// Called every time an animation completes.
+  ///
+  /// This can be useful to trigger additional actions (e.g. another animation)
+  /// at the end of the current animation.
+  final void Function()? onEnd;
+
   @override
   Widget build(BuildContext context) {
     final ps = PixelSnap.of(context);
@@ -2705,6 +2770,7 @@ class AnimatedSize extends StatelessWidget {
       duration: duration,
       reverseDuration: reverseDuration,
       clipBehavior: clipBehavior,
+      onEnd: onEnd,
       child: child,
     );
     return res;
@@ -2805,11 +2871,13 @@ class Flex extends MultiChildRenderObjectWidget {
     this.verticalDirection = VerticalDirection.down,
     this.textBaseline, // NO DEFAULT: we don't know what the text's baseline should be
     this.clipBehavior = Clip.none,
+    this.spacing = 0.0,
     super.children,
   }) : assert(
-            !identical(crossAxisAlignment, CrossAxisAlignment.baseline) ||
-                textBaseline != null,
-            'textBaseline is required if you specify the crossAxisAlignment with CrossAxisAlignment.baseline');
+          !identical(crossAxisAlignment, CrossAxisAlignment.baseline) ||
+              textBaseline != null,
+          'textBaseline is required if you specify the crossAxisAlignment with CrossAxisAlignment.baseline',
+        );
   // Cannot use == in the assert above instead of identical because of https://github.com/dart-lang/language/issues/1811.
 
   /// The direction to use as the main axis.
@@ -2843,6 +2911,13 @@ class Flex extends MultiChildRenderObjectWidget {
   ///
   /// For example, [CrossAxisAlignment.center], the default, centers the
   /// children in the cross axis (e.g., horizontally for a [Column]).
+  ///
+  /// When the cross axis is vertical (as for a [Row]) and the children
+  /// contain text, consider using [CrossAxisAlignment.baseline] instead.
+  /// This typically produces better visual results if the different children
+  /// have text with different font metrics, for example because they differ in
+  /// [TextStyle.fontSize] or other [TextStyle] properties, or because
+  /// they use different fonts due to being written in different scripts.
   final CrossAxisAlignment crossAxisAlignment;
 
   /// Determines the order to lay children out horizontally and how to interpret
@@ -2907,6 +2982,9 @@ class Flex extends MultiChildRenderObjectWidget {
   /// Defaults to [Clip.none].
   final Clip clipBehavior;
 
+  /// {@macro flutter.rendering.RenderFlex.spacing}
+  final double spacing;
+
   bool get _needTextDirection {
     switch (direction) {
       case Axis.horizontal:
@@ -2950,6 +3028,7 @@ class Flex extends MultiChildRenderObjectWidget {
       verticalDirection: verticalDirection,
       textBaseline: textBaseline,
       clipBehavior: clipBehavior,
+      spacing: spacing,
     );
   }
 
@@ -2965,7 +3044,8 @@ class Flex extends MultiChildRenderObjectWidget {
       ..textDirection = getEffectiveTextDirection(context)
       ..verticalDirection = verticalDirection
       ..textBaseline = textBaseline
-      ..clipBehavior = clipBehavior;
+      ..clipBehavior = clipBehavior
+      ..spacing = spacing;
   }
 
   @override
@@ -2974,17 +3054,26 @@ class Flex extends MultiChildRenderObjectWidget {
     properties.add(EnumProperty<Axis>('direction', direction));
     properties.add(EnumProperty<MainAxisAlignment>(
         'mainAxisAlignment', mainAxisAlignment));
-    properties.add(EnumProperty<MainAxisSize>('mainAxisSize', mainAxisSize,
-        defaultValue: MainAxisSize.max));
+    properties.add(
+      EnumProperty<MainAxisSize>('mainAxisSize', mainAxisSize,
+          defaultValue: MainAxisSize.max),
+    );
     properties.add(EnumProperty<CrossAxisAlignment>(
         'crossAxisAlignment', crossAxisAlignment));
     properties.add(EnumProperty<TextDirection>('textDirection', textDirection,
         defaultValue: null));
-    properties.add(EnumProperty<VerticalDirection>(
-        'verticalDirection', verticalDirection,
-        defaultValue: VerticalDirection.down));
+    properties.add(
+      EnumProperty<VerticalDirection>(
+        'verticalDirection',
+        verticalDirection,
+        defaultValue: VerticalDirection.down,
+      ),
+    );
     properties.add(EnumProperty<TextBaseline>('textBaseline', textBaseline,
         defaultValue: null));
+    properties.add(EnumProperty<Clip>('clipBehavior', clipBehavior,
+        defaultValue: Clip.none));
+    properties.add(DoubleProperty('spacing', spacing, defaultValue: 0.0));
   }
 }
 
@@ -3002,6 +3091,14 @@ class Flex extends MultiChildRenderObjectWidget {
 ///
 /// If you only have one child, then consider using [Align] or [Center] to
 /// position the child.
+///
+/// By default, [crossAxisAlignment] is [CrossAxisAlignment.center], which
+/// centers the children in the vertical axis.  If several of the children
+/// contain text, this is likely to make them visually misaligned if
+/// they have different font metrics (for example because they differ in
+/// [TextStyle.fontSize] or other [TextStyle] properties, or because
+/// they use different fonts due to being written in different scripts).
+/// Consider using [CrossAxisAlignment.baseline] instead.
 ///
 /// {@tool snippet}
 ///
@@ -3183,10 +3280,9 @@ class Row extends Flex {
     super.textDirection,
     super.verticalDirection,
     super.textBaseline, // NO DEFAULT: we don't know what the text's baseline should be
+    super.spacing,
     super.children,
-  }) : super(
-          direction: Axis.horizontal,
-        );
+  }) : super(direction: Axis.horizontal);
 }
 
 /// A widget that displays its children in a vertical array.
@@ -3244,8 +3340,8 @@ class Row extends Flex {
 ///     const Text('Through the night, we have one shot to live another day'),
 ///     const Text('We cannot let a stray gunshot give us away'),
 ///     const Text('We will fight up close, seize the moment and stay in it'),
-///     const Text('It’s either that or meet the business end of a bayonet'),
-///     const Text('The code word is ‘Rochambeau,’ dig me?'),
+///     const Text("It's either that or meet the business end of a bayonet"),
+///     const Text("The code word is 'Rochambeau,' dig me?"),
 ///     Text('Rochambeau!', style: DefaultTextStyle.of(context).style.apply(fontSizeFactor: 2.0)),
 ///   ],
 /// )
@@ -3374,10 +3470,9 @@ class Column extends Flex {
     super.textDirection,
     super.verticalDirection,
     super.textBaseline,
+    super.spacing,
     super.children,
-  }) : super(
-          direction: Axis.vertical,
-        );
+  }) : super(direction: Axis.vertical);
 }
 
 /// A widget that sizes its child to a fraction of the total available space.
@@ -3536,18 +3631,56 @@ class Center extends Align {
 /// This example shows how to display text using the [Text] widget with the
 /// [overflow] set to [TextOverflow.ellipsis].
 ///
-/// ![If the text is shorter than the available space, it is displayed in full without an ellipsis.](https://flutter.github.io/assets-for-api-docs/assets/widgets/text.png)
-///
 /// ![If the text overflows, the Text widget displays an ellipsis to trim the overflowing text](https://flutter.github.io/assets-for-api-docs/assets/widgets/text_ellipsis.png)
 ///
 /// ```dart
-/// Text(
-///   'Hello, $_name! How are you?',
-///   textAlign: TextAlign.center,
-///   overflow: TextOverflow.ellipsis,
-///   style: const TextStyle(fontWeight: FontWeight.bold),
+/// Container(
+///   width: 100,
+///   decoration: BoxDecoration(border: Border.all()),
+///   child: const Text(
+///     'Hello, how are you?',
+///     overflow: TextOverflow.ellipsis,
+///   ),
 /// )
 /// ```
+/// {@end-tool}
+///
+/// {@tool snippet}
+///
+/// Setting [maxLines] to `1` is not equivalent to disabling soft wrapping with
+/// [softWrap]. This is apparent when using [TextOverflow.fade] as the following
+/// examples show.
+///
+/// ![If a second line overflows the Text widget displays a horizontal fade](https://flutter.github.io/assets-for-api-docs/assets/widgets/text_fade_max_lines.png)
+///
+/// ```dart
+/// const Text(
+///   'Hello, how are you?',
+///   overflow: TextOverflow.fade,
+///   maxLines: 1,
+/// )
+/// ```
+///
+/// Here soft wrapping is enabled and the [Text] widget tries to wrap the words
+/// "how are you?" to a second line. This is prevented by the [maxLines] value
+/// of `1`. The result is that a second line overflows and the fade appears in a
+/// horizontal direction at the bottom.
+///
+/// ![If a single line overflows the Text widget displays a horizontal fade](https://flutter.github.io/assets-for-api-docs/assets/widgets/text_fade_soft_wrap.png)
+///
+/// ```dart
+/// const Text(
+///   'Hello, how are you?',
+///   overflow: TextOverflow.fade,
+///   softWrap: false,
+/// )
+/// ```
+///
+/// Here soft wrapping is disabled with `softWrap: false` and the [Text] widget
+/// attempts to display its text in a single unbroken line. The result is that
+/// the single line overflows and the fade appears in a vertical direction at
+/// the right.
+///
 /// {@end-tool}
 ///
 /// Using the [Text.rich] constructor, the [Text] widget can
@@ -3633,6 +3766,7 @@ class Text extends StatelessWidget {
     this.textScaler,
     this.maxLines,
     this.semanticsLabel,
+    this.semanticsIdentifier,
     this.textWidthBasis,
     this.textHeightBehavior,
     this.selectionColor,
@@ -3669,6 +3803,7 @@ class Text extends StatelessWidget {
     this.textScaler,
     this.maxLines,
     this.semanticsLabel,
+    this.semanticsIdentifier,
     this.textWidthBasis,
     this.textHeightBehavior,
     this.selectionColor,
@@ -3786,6 +3921,14 @@ class Text extends StatelessWidget {
   /// {@endtemplate}
   final String? semanticsLabel;
 
+  /// A unique identifier for the semantics node for this widget.
+  ///
+  /// This is useful for cases where the text widget needs to have a uniquely
+  /// identifiable ID that is recognized through the automation tools without
+  /// having a dependency on the actual content of the text that can possibly be
+  /// dynamic in nature.
+  final String? semanticsIdentifier;
+
   /// {@macro flutter.painting.textPainter.textWidthBasis}
   final TextWidthBasis? textWidthBasis;
 
@@ -3821,47 +3964,75 @@ class Text extends StatelessWidget {
         TextScaler.linear(textScaleFactor),
       (null, null) => MediaQuery.textScalerOf(context),
     };
-
-    Widget result = RichText(
-      textAlign: textAlign ?? defaultTextStyle.textAlign ?? TextAlign.start,
-      textDirection:
-          textDirection, // RichText uses Directionality.of to obtain a default if this is null.
-      locale:
-          locale, // RichText uses Localizations.localeOf to obtain a default if this is null
-      softWrap: softWrap ?? defaultTextStyle.softWrap,
-      overflow:
-          overflow ?? effectiveTextStyle?.overflow ?? defaultTextStyle.overflow,
-      textScaler: textScaler,
-      maxLines: maxLines ?? defaultTextStyle.maxLines,
-      strutStyle: strutStyle,
-      textWidthBasis: textWidthBasis ?? defaultTextStyle.textWidthBasis,
-      textHeightBehavior: textHeightBehavior ??
-          defaultTextStyle.textHeightBehavior ??
-          DefaultTextHeightBehavior.maybeOf(context),
-      selectionRegistrar: registrar,
-      selectionColor: selectionColor ??
-          DefaultSelectionStyle.of(context).selectionColor ??
-          DefaultSelectionStyle.defaultColor,
-      text: TextSpan(
-        style: effectiveTextStyle,
-        text: data,
-        children: textSpan != null ? <InlineSpan>[textSpan!] : null,
-      ),
-    );
+    late Widget result;
     if (registrar != null) {
       result = MouseRegion(
         cursor: DefaultSelectionStyle.of(context).mouseCursor ??
             SystemMouseCursors.text,
-        child: result,
+        child: _SelectableTextContainer(
+          textAlign: textAlign ?? defaultTextStyle.textAlign ?? TextAlign.start,
+          textDirection:
+              textDirection, // RichText uses Directionality.of to obtain a default if this is null.
+          locale:
+              locale, // RichText uses Localizations.localeOf to obtain a default if this is null
+          softWrap: softWrap ?? defaultTextStyle.softWrap,
+          overflow: overflow ??
+              effectiveTextStyle?.overflow ??
+              defaultTextStyle.overflow,
+          textScaler: textScaler,
+          maxLines: maxLines ?? defaultTextStyle.maxLines,
+          strutStyle: strutStyle,
+          textWidthBasis: textWidthBasis ?? defaultTextStyle.textWidthBasis,
+          textHeightBehavior: textHeightBehavior ??
+              defaultTextStyle.textHeightBehavior ??
+              DefaultTextHeightBehavior.maybeOf(context),
+          selectionColor: selectionColor ??
+              DefaultSelectionStyle.of(context).selectionColor ??
+              DefaultSelectionStyle.defaultColor,
+          text: TextSpan(
+            style: effectiveTextStyle,
+            text: data,
+            locale: locale,
+            children: textSpan != null ? <InlineSpan>[textSpan!] : null,
+          ),
+        ),
+      );
+    } else {
+      result = RichText(
+        textAlign: textAlign ?? defaultTextStyle.textAlign ?? TextAlign.start,
+        textDirection:
+            textDirection, // RichText uses Directionality.of to obtain a default if this is null.
+        locale:
+            locale, // RichText uses Localizations.localeOf to obtain a default if this is null
+        softWrap: softWrap ?? defaultTextStyle.softWrap,
+        overflow: overflow ??
+            effectiveTextStyle?.overflow ??
+            defaultTextStyle.overflow,
+        textScaler: textScaler,
+        maxLines: maxLines ?? defaultTextStyle.maxLines,
+        strutStyle: strutStyle,
+        textWidthBasis: textWidthBasis ?? defaultTextStyle.textWidthBasis,
+        textHeightBehavior: textHeightBehavior ??
+            defaultTextStyle.textHeightBehavior ??
+            DefaultTextHeightBehavior.maybeOf(context),
+        selectionColor: selectionColor ??
+            DefaultSelectionStyle.of(context).selectionColor ??
+            DefaultSelectionStyle.defaultColor,
+        text: TextSpan(
+          style: effectiveTextStyle,
+          text: data,
+          locale: locale,
+          children: textSpan != null ? <InlineSpan>[textSpan!] : null,
+        ),
       );
     }
-    if (semanticsLabel != null) {
+    if (semanticsLabel != null || semanticsIdentifier != null) {
       result = Semantics(
         textDirection: textDirection,
         label: semanticsLabel,
-        child: ExcludeSemantics(
-          child: result,
-        ),
+        identifier: semanticsIdentifier,
+        child:
+            ExcludeSemantics(excluding: semanticsLabel != null, child: result),
       );
     }
     return result;
@@ -3872,8 +4043,10 @@ class Text extends StatelessWidget {
     super.debugFillProperties(properties);
     properties.add(StringProperty('data', data, showName: false));
     if (textSpan != null) {
-      properties.add(textSpan!.toDiagnosticsNode(
-          name: 'textSpan', style: DiagnosticsTreeStyle.transition));
+      properties.add(
+        textSpan!.toDiagnosticsNode(
+            name: 'textSpan', style: DiagnosticsTreeStyle.transition),
+      );
     }
     style?.debugFillProperties(properties);
     properties.add(
@@ -3882,25 +4055,719 @@ class Text extends StatelessWidget {
         defaultValue: null));
     properties
         .add(DiagnosticsProperty<Locale>('locale', locale, defaultValue: null));
-    properties.add(FlagProperty('softWrap',
+    properties.add(
+      FlagProperty(
+        'softWrap',
         value: softWrap,
         ifTrue: 'wrapping at box width',
         ifFalse: 'no wrapping except at line break characters',
-        showName: true));
+        showName: true,
+      ),
+    );
     properties.add(
         EnumProperty<TextOverflow>('overflow', overflow, defaultValue: null));
     properties.add(
         DoubleProperty('textScaleFactor', textScaleFactor, defaultValue: null));
     properties.add(IntProperty('maxLines', maxLines, defaultValue: null));
-    properties.add(EnumProperty<TextWidthBasis>(
-        'textWidthBasis', textWidthBasis,
-        defaultValue: null));
-    properties.add(DiagnosticsProperty<ui.TextHeightBehavior>(
-        'textHeightBehavior', textHeightBehavior,
-        defaultValue: null));
+    properties.add(
+      EnumProperty<TextWidthBasis>('textWidthBasis', textWidthBasis,
+          defaultValue: null),
+    );
+    properties.add(
+      DiagnosticsProperty<ui.TextHeightBehavior>(
+        'textHeightBehavior',
+        textHeightBehavior,
+        defaultValue: null,
+      ),
+    );
     if (semanticsLabel != null) {
       properties.add(StringProperty('semanticsLabel', semanticsLabel));
     }
+    if (semanticsIdentifier != null) {
+      properties
+          .add(StringProperty('semanticsIdentifier', semanticsIdentifier));
+    }
+  }
+}
+
+class _SelectableTextContainer extends StatefulWidget {
+  const _SelectableTextContainer({
+    required this.text,
+    required this.textAlign,
+    this.textDirection,
+    required this.softWrap,
+    required this.overflow,
+    required this.textScaler,
+    this.maxLines,
+    this.locale,
+    this.strutStyle,
+    required this.textWidthBasis,
+    this.textHeightBehavior,
+    required this.selectionColor,
+  });
+
+  final TextSpan text;
+  final TextAlign textAlign;
+  final TextDirection? textDirection;
+  final bool softWrap;
+  final TextOverflow overflow;
+  final TextScaler textScaler;
+  final int? maxLines;
+  final Locale? locale;
+  final StrutStyle? strutStyle;
+  final TextWidthBasis textWidthBasis;
+  final ui.TextHeightBehavior? textHeightBehavior;
+  final Color selectionColor;
+
+  @override
+  State<_SelectableTextContainer> createState() =>
+      _SelectableTextContainerState();
+}
+
+class _SelectableTextContainerState extends State<_SelectableTextContainer> {
+  late final _SelectableTextContainerDelegate _selectionDelegate;
+  final GlobalKey _textKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    _selectionDelegate = _SelectableTextContainerDelegate(_textKey);
+  }
+
+  @override
+  void dispose() {
+    _selectionDelegate.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SelectionContainer(
+      delegate: _selectionDelegate,
+      // Use [_RichText] wrapper so the underlying [RenderParagraph] can register
+      // its [Selectable]s to the [SelectionContainer] created by this widget.
+      child: _RichText(
+        textKey: _textKey,
+        textAlign: widget.textAlign,
+        textDirection: widget.textDirection,
+        locale: widget.locale,
+        softWrap: widget.softWrap,
+        overflow: widget.overflow,
+        textScaler: widget.textScaler,
+        maxLines: widget.maxLines,
+        strutStyle: widget.strutStyle,
+        textWidthBasis: widget.textWidthBasis,
+        textHeightBehavior: widget.textHeightBehavior,
+        selectionColor: widget.selectionColor,
+        text: widget.text,
+      ),
+    );
+  }
+}
+
+class _SelectableTextContainerDelegate
+    extends StaticSelectionContainerDelegate {
+  _SelectableTextContainerDelegate(GlobalKey textKey) : _textKey = textKey;
+
+  final GlobalKey _textKey;
+  RenderParagraph get paragraph =>
+      _textKey.currentContext!.findRenderObject()! as RenderParagraph;
+
+  @override
+  SelectionResult handleSelectParagraph(SelectParagraphSelectionEvent event) {
+    final SelectionResult result = _handleSelectParagraph(event);
+    super.didReceiveSelectionBoundaryEvents();
+    return result;
+  }
+
+  SelectionResult _handleSelectParagraph(SelectParagraphSelectionEvent event) {
+    if (event.absorb) {
+      for (int index = 0; index < selectables.length; index += 1) {
+        dispatchSelectionEventToChild(selectables[index], event);
+      }
+      currentSelectionStartIndex = 0;
+      currentSelectionEndIndex = selectables.length - 1;
+      return SelectionResult.next;
+    }
+
+    // First pass, if the position is on a placeholder then dispatch the selection
+    // event to the [Selectable] at the location and terminate.
+    for (int index = 0; index < selectables.length; index += 1) {
+      final bool selectableIsPlaceholder =
+          !paragraph.selectableBelongsToParagraph(
+        selectables[index],
+      );
+      if (selectableIsPlaceholder &&
+          selectables[index].boundingBoxes.isNotEmpty) {
+        for (final Rect rect in selectables[index].boundingBoxes) {
+          final Rect globalRect = MatrixUtils.transformRect(
+            selectables[index].getTransformTo(null),
+            rect,
+          );
+          if (globalRect.contains(event.globalPosition)) {
+            currentSelectionStartIndex = currentSelectionEndIndex = index;
+            return dispatchSelectionEventToChild(selectables[index], event);
+          }
+        }
+      }
+    }
+
+    SelectionResult? lastSelectionResult;
+    bool foundStart = false;
+    int? lastNextIndex;
+    for (int index = 0; index < selectables.length; index += 1) {
+      if (!paragraph.selectableBelongsToParagraph(selectables[index])) {
+        if (foundStart) {
+          final SelectionEvent synthesizedEvent = SelectParagraphSelectionEvent(
+            globalPosition: event.globalPosition,
+            absorb: true,
+          );
+          final SelectionResult result = dispatchSelectionEventToChild(
+            selectables[index],
+            synthesizedEvent,
+          );
+          if (selectables.length - 1 == index) {
+            currentSelectionEndIndex = index;
+            _flushInactiveSelections();
+            return result;
+          }
+        }
+        continue;
+      }
+      final SelectionGeometry existingGeometry = selectables[index].value;
+      lastSelectionResult =
+          dispatchSelectionEventToChild(selectables[index], event);
+      if (index == selectables.length - 1 &&
+          lastSelectionResult == SelectionResult.next) {
+        if (foundStart) {
+          currentSelectionEndIndex = index;
+        } else {
+          currentSelectionStartIndex = currentSelectionEndIndex = index;
+        }
+        return SelectionResult.next;
+      }
+      if (lastSelectionResult == SelectionResult.next) {
+        if (selectables[index].value == existingGeometry && !foundStart) {
+          lastNextIndex = index;
+        }
+        if (selectables[index].value != existingGeometry && !foundStart) {
+          assert(selectables[index].boundingBoxes.isNotEmpty);
+          assert(selectables[index].value.selectionRects.isNotEmpty);
+          final bool selectionAtStartOfSelectable =
+              selectables[index].boundingBoxes[0].overlaps(
+                    selectables[index].value.selectionRects[0],
+                  );
+          int startIndex = 0;
+          if (lastNextIndex != null && selectionAtStartOfSelectable) {
+            startIndex = lastNextIndex + 1;
+          } else {
+            startIndex = lastNextIndex == null && selectionAtStartOfSelectable
+                ? 0
+                : index;
+          }
+          for (int i = startIndex; i < index; i += 1) {
+            final SelectionEvent synthesizedEvent =
+                SelectParagraphSelectionEvent(
+              globalPosition: event.globalPosition,
+              absorb: true,
+            );
+            dispatchSelectionEventToChild(selectables[i], synthesizedEvent);
+          }
+          currentSelectionStartIndex = startIndex;
+          foundStart = true;
+        }
+        continue;
+      }
+      if (index == 0 && lastSelectionResult == SelectionResult.previous) {
+        return SelectionResult.previous;
+      }
+      if (selectables[index].value != existingGeometry) {
+        if (!foundStart && lastNextIndex == null) {
+          currentSelectionStartIndex = 0;
+          for (int i = 0; i < index; i += 1) {
+            final SelectionEvent synthesizedEvent =
+                SelectParagraphSelectionEvent(
+              globalPosition: event.globalPosition,
+              absorb: true,
+            );
+            dispatchSelectionEventToChild(selectables[i], synthesizedEvent);
+          }
+        }
+        currentSelectionEndIndex = index;
+        // Geometry has changed as a result of select paragraph, need to clear the
+        // selection of other selectables to keep selection in sync.
+        _flushInactiveSelections();
+      }
+      return SelectionResult.end;
+    }
+    assert(lastSelectionResult == null);
+    return SelectionResult.end;
+  }
+
+  /// Initializes the selection of the selectable children.
+  ///
+  /// The goal is to find the selectable child that contains the selection edge.
+  /// Returns [SelectionResult.end] if the selection edge ends on any of the
+  /// children. Otherwise, it returns [SelectionResult.previous] if the selection
+  /// does not reach any of its children. Returns [SelectionResult.next]
+  /// if the selection reaches the end of its children.
+  ///
+  /// Ideally, this method should only be called twice at the beginning of the
+  /// drag selection, once for start edge update event, once for end edge update
+  /// event.
+  SelectionResult _initSelection(SelectionEdgeUpdateEvent event,
+      {required bool isEnd}) {
+    assert(
+      (isEnd && currentSelectionEndIndex == -1) ||
+          (!isEnd && currentSelectionStartIndex == -1),
+    );
+    SelectionResult? finalResult;
+    // Begin the search for the selection edge at the opposite edge if it exists.
+    final bool hasOppositeEdge = isEnd
+        ? currentSelectionStartIndex != -1
+        : currentSelectionEndIndex != -1;
+    int newIndex = switch ((isEnd, hasOppositeEdge)) {
+      (true, true) => currentSelectionStartIndex,
+      (true, false) => 0,
+      (false, true) => currentSelectionEndIndex,
+      (false, false) => 0,
+    };
+    bool? forward;
+    late SelectionResult currentSelectableResult;
+    // This loop sends the selection event to one of the following to determine
+    // the direction of the search.
+    //  - The opposite edge index if it exists.
+    //  - Index 0 if the opposite edge index does not exist.
+    //
+    // If the result is `SelectionResult.next`, this loop look backward.
+    // Otherwise, it looks forward.
+    //
+    // The terminate condition are:
+    // 1. the selectable returns end, pending, none.
+    // 2. the selectable returns previous when looking forward.
+    // 2. the selectable returns next when looking backward.
+    while (
+        newIndex < selectables.length && newIndex >= 0 && finalResult == null) {
+      currentSelectableResult =
+          dispatchSelectionEventToChild(selectables[newIndex], event);
+      switch (currentSelectableResult) {
+        case SelectionResult.end:
+        case SelectionResult.pending:
+        case SelectionResult.none:
+          finalResult = currentSelectableResult;
+        case SelectionResult.next:
+          if (forward == false) {
+            newIndex += 1;
+            finalResult = SelectionResult.end;
+          } else if (newIndex == selectables.length - 1) {
+            finalResult = currentSelectableResult;
+          } else {
+            forward = true;
+            newIndex += 1;
+          }
+        case SelectionResult.previous:
+          if (forward ?? false) {
+            newIndex -= 1;
+            finalResult = SelectionResult.end;
+          } else if (newIndex == 0) {
+            finalResult = currentSelectableResult;
+          } else {
+            forward = false;
+            newIndex -= 1;
+          }
+      }
+    }
+    if (isEnd) {
+      currentSelectionEndIndex = newIndex;
+    } else {
+      currentSelectionStartIndex = newIndex;
+    }
+    _flushInactiveSelections();
+    return finalResult!;
+  }
+
+  SelectionResult _adjustSelection(SelectionEdgeUpdateEvent event,
+      {required bool isEnd}) {
+    assert(() {
+      if (isEnd) {
+        assert(currentSelectionEndIndex < selectables.length &&
+            currentSelectionEndIndex >= 0);
+        return true;
+      }
+      assert(currentSelectionStartIndex < selectables.length &&
+          currentSelectionStartIndex >= 0);
+      return true;
+    }());
+    SelectionResult? finalResult;
+    // Determines if the edge being adjusted is within the current viewport.
+    //  - If so, we begin the search for the new selection edge position at the
+    //    currentSelectionEndIndex/currentSelectionStartIndex.
+    //  - If not, we attempt to locate the new selection edge starting from
+    //    the opposite end.
+    //  - If neither edge is in the current viewport, the search for the new
+    //    selection edge position begins at 0.
+    //
+    // This can happen when there is a scrollable child and the edge being adjusted
+    // has been scrolled out of view.
+    final bool isCurrentEdgeWithinViewport = isEnd
+        ? value.endSelectionPoint != null
+        : value.startSelectionPoint != null;
+    final bool isOppositeEdgeWithinViewport = isEnd
+        ? value.startSelectionPoint != null
+        : value.endSelectionPoint != null;
+    int newIndex = switch ((
+      isEnd,
+      isCurrentEdgeWithinViewport,
+      isOppositeEdgeWithinViewport
+    )) {
+      (true, true, true) => currentSelectionEndIndex,
+      (true, true, false) => currentSelectionEndIndex,
+      (true, false, true) => currentSelectionStartIndex,
+      (true, false, false) => 0,
+      (false, true, true) => currentSelectionStartIndex,
+      (false, true, false) => currentSelectionStartIndex,
+      (false, false, true) => currentSelectionEndIndex,
+      (false, false, false) => 0,
+    };
+    bool? forward;
+    late SelectionResult currentSelectableResult;
+    // This loop sends the selection event to one of the following to determine
+    // the direction of the search.
+    //  - currentSelectionEndIndex/currentSelectionStartIndex if the current edge
+    //    is in the current viewport.
+    //  - The opposite edge index if the current edge is not in the current viewport.
+    //  - Index 0 if neither edge is in the current viewport.
+    //
+    // If the result is `SelectionResult.next`, this loop look backward.
+    // Otherwise, it looks forward.
+    //
+    // The terminate condition are:
+    // 1. the selectable returns end, pending, none.
+    // 2. the selectable returns previous when looking forward.
+    // 2. the selectable returns next when looking backward.
+    while (
+        newIndex < selectables.length && newIndex >= 0 && finalResult == null) {
+      currentSelectableResult =
+          dispatchSelectionEventToChild(selectables[newIndex], event);
+      switch (currentSelectableResult) {
+        case SelectionResult.end:
+        case SelectionResult.pending:
+        case SelectionResult.none:
+          finalResult = currentSelectableResult;
+        case SelectionResult.next:
+          if (forward == false) {
+            newIndex += 1;
+            finalResult = SelectionResult.end;
+          } else if (newIndex == selectables.length - 1) {
+            finalResult = currentSelectableResult;
+          } else {
+            forward = true;
+            newIndex += 1;
+          }
+        case SelectionResult.previous:
+          if (forward ?? false) {
+            newIndex -= 1;
+            finalResult = SelectionResult.end;
+          } else if (newIndex == 0) {
+            finalResult = currentSelectableResult;
+          } else {
+            forward = false;
+            newIndex -= 1;
+          }
+      }
+    }
+    if (isEnd) {
+      final bool forwardSelection =
+          currentSelectionEndIndex >= currentSelectionStartIndex;
+      if (forward != null &&
+          ((!forwardSelection &&
+                  forward &&
+                  newIndex >= currentSelectionStartIndex) ||
+              (forwardSelection &&
+                  !forward &&
+                  newIndex <= currentSelectionStartIndex))) {
+        currentSelectionStartIndex = currentSelectionEndIndex;
+      }
+      currentSelectionEndIndex = newIndex;
+    } else {
+      final bool forwardSelection =
+          currentSelectionEndIndex >= currentSelectionStartIndex;
+      if (forward != null &&
+          ((!forwardSelection &&
+                  !forward &&
+                  newIndex <= currentSelectionEndIndex) ||
+              (forwardSelection &&
+                  forward &&
+                  newIndex >= currentSelectionEndIndex))) {
+        currentSelectionEndIndex = currentSelectionStartIndex;
+      }
+      currentSelectionStartIndex = newIndex;
+    }
+    _flushInactiveSelections();
+    return finalResult!;
+  }
+
+  /// The compare function this delegate used for determining the selection
+  /// order of the [Selectable]s.
+  ///
+  /// Sorts the [Selectable]s by their top left [Rect].
+  @override
+  Comparator<Selectable> get compareOrder => _compareScreenOrder;
+
+  static int _compareScreenOrder(Selectable a, Selectable b) {
+    // Attempt to sort the selectables under a [_SelectableTextContainerDelegate]
+    // by the top left rect.
+    final Rect rectA = MatrixUtils.transformRect(
+        a.getTransformTo(null), a.boundingBoxes.first);
+    final Rect rectB = MatrixUtils.transformRect(
+        b.getTransformTo(null), b.boundingBoxes.first);
+    final int result = _compareVertically(rectA, rectB);
+    if (result != 0) {
+      return result;
+    }
+    return _compareHorizontally(rectA, rectB);
+  }
+
+  /// Compares two rectangles in the screen order solely by their vertical
+  /// positions.
+  ///
+  /// Returns positive if a is lower, negative if a is higher, 0 if their
+  /// order can't be determine solely by their vertical position.
+  static int _compareVertically(Rect a, Rect b) {
+    // The rectangles overlap so defer to horizontal comparison.
+    if ((a.top - b.top < _kSelectableVerticalComparingThreshold &&
+            a.bottom - b.bottom > -_kSelectableVerticalComparingThreshold) ||
+        (b.top - a.top < _kSelectableVerticalComparingThreshold &&
+            b.bottom - a.bottom > -_kSelectableVerticalComparingThreshold)) {
+      return 0;
+    }
+    if ((a.top - b.top).abs() > _kSelectableVerticalComparingThreshold) {
+      return a.top > b.top ? 1 : -1;
+    }
+    return a.bottom > b.bottom ? 1 : -1;
+  }
+
+  /// Compares two rectangles in the screen order by their horizontal positions
+  /// assuming one of the rectangles enclose the other rect vertically.
+  ///
+  /// Returns positive if a is lower, negative if a is higher.
+  static int _compareHorizontally(Rect a, Rect b) {
+    // a encloses b.
+    if (a.left - b.left < precisionErrorTolerance &&
+        a.right - b.right > -precisionErrorTolerance) {
+      return -1;
+    }
+    // b encloses a.
+    if (b.left - a.left < precisionErrorTolerance &&
+        b.right - a.right > -precisionErrorTolerance) {
+      return 1;
+    }
+    if ((a.left - b.left).abs() > precisionErrorTolerance) {
+      return a.left > b.left ? 1 : -1;
+    }
+    return a.right > b.right ? 1 : -1;
+  }
+
+  /// This method calculates a local [SelectedContentRange] based on the list
+  /// of [selections] that are accumulated from the [Selectable] children under this
+  /// delegate. This calculation takes into account the accumulated content
+  /// length before the active selection, and returns null when either selection
+  /// edge has not been set.
+  SelectedContentRange? _calculateLocalRange(List<_SelectionInfo> selections) {
+    if (currentSelectionStartIndex == -1 || currentSelectionEndIndex == -1) {
+      return null;
+    }
+    int startOffset = 0;
+    int endOffset = 0;
+    bool foundStart = false;
+    bool forwardSelection =
+        currentSelectionEndIndex >= currentSelectionStartIndex;
+    if (currentSelectionEndIndex == currentSelectionStartIndex) {
+      // Determining selection direction is inaccurate if currentSelectionStartIndex == currentSelectionEndIndex.
+      // Use the range from the selectable within the selection as the source of truth for selection direction.
+      final SelectedContentRange rangeAtSelectableInSelection =
+          selectables[currentSelectionStartIndex].getSelection()!;
+      forwardSelection = rangeAtSelectableInSelection.endOffset >=
+          rangeAtSelectableInSelection.startOffset;
+    }
+    for (int index = 0; index < selections.length; index++) {
+      final _SelectionInfo selection = selections[index];
+      if (selection.range == null) {
+        if (foundStart) {
+          return SelectedContentRange(
+            startOffset: forwardSelection ? startOffset : endOffset,
+            endOffset: forwardSelection ? endOffset : startOffset,
+          );
+        }
+        startOffset += selection.contentLength;
+        endOffset = startOffset;
+        continue;
+      }
+      final int selectionStartNormalized = min(
+        selection.range!.startOffset,
+        selection.range!.endOffset,
+      );
+      final int selectionEndNormalized = max(
+        selection.range!.startOffset,
+        selection.range!.endOffset,
+      );
+      if (!foundStart) {
+        // Because a RenderParagraph may split its content into multiple selectables
+        // we have to consider at what offset a selectable starts at relative
+        // to the RenderParagraph, when the selectable is not the start of the content.
+        final bool shouldConsiderContentStart = index > 0 &&
+            paragraph.selectableBelongsToParagraph(selectables[index]);
+        startOffset += (selectionStartNormalized -
+                (shouldConsiderContentStart
+                    ? paragraph
+                        .getPositionForOffset(
+                          selectables[index].boundingBoxes.first.centerLeft,
+                        )
+                        .offset
+                    : 0))
+            .abs();
+        endOffset = startOffset +
+            (selectionEndNormalized - selectionStartNormalized).abs();
+        foundStart = true;
+      } else {
+        endOffset += (selectionEndNormalized - selectionStartNormalized).abs();
+      }
+    }
+    assert(
+      foundStart,
+      'The start of the selection has not been found despite this selection delegate having an existing currentSelectionStartIndex and currentSelectionEndIndex.',
+    );
+    return SelectedContentRange(
+      startOffset: forwardSelection ? startOffset : endOffset,
+      endOffset: forwardSelection ? endOffset : startOffset,
+    );
+  }
+
+  /// Returns a [SelectedContentRange] considering the [SelectedContentRange]
+  /// from each [Selectable] child managed under this delegate.
+  ///
+  /// When nothing is selected or either selection edge has not been set,
+  /// this method will return `null`.
+  @override
+  SelectedContentRange? getSelection() {
+    final List<_SelectionInfo> selections = <_SelectionInfo>[
+      for (final Selectable selectable in selectables)
+        (
+          contentLength: selectable.contentLength,
+          range: selectable.getSelection()
+        ),
+    ];
+    return _calculateLocalRange(selections);
+  }
+
+  // From [SelectableRegion].
+
+  // Clears the selection on all selectables not in the range of
+  // currentSelectionStartIndex..currentSelectionEndIndex.
+  //
+  // If one of the edges does not exist, then this method will clear the selection
+  // in all selectables except the existing edge.
+  //
+  // If neither of the edges exist this method immediately returns.
+  void _flushInactiveSelections() {
+    if (currentSelectionStartIndex == -1 && currentSelectionEndIndex == -1) {
+      return;
+    }
+    if (currentSelectionStartIndex == -1 || currentSelectionEndIndex == -1) {
+      final int skipIndex = currentSelectionStartIndex == -1
+          ? currentSelectionEndIndex
+          : currentSelectionStartIndex;
+      selectables
+          .where((Selectable target) => target != selectables[skipIndex])
+          .forEach(
+            (Selectable target) => dispatchSelectionEventToChild(
+                target, const ClearSelectionEvent()),
+          );
+      return;
+    }
+    final int skipStart =
+        min(currentSelectionStartIndex, currentSelectionEndIndex);
+    final int skipEnd =
+        max(currentSelectionStartIndex, currentSelectionEndIndex);
+    for (int index = 0; index < selectables.length; index += 1) {
+      if (index >= skipStart && index <= skipEnd) {
+        continue;
+      }
+      dispatchSelectionEventToChild(
+          selectables[index], const ClearSelectionEvent());
+    }
+  }
+
+  @override
+  SelectionResult handleSelectionEdgeUpdate(SelectionEdgeUpdateEvent event) {
+    if (event.granularity != TextGranularity.paragraph) {
+      return super.handleSelectionEdgeUpdate(event);
+    }
+    updateLastSelectionEdgeLocation(
+      globalSelectionEdgeLocation: event.globalPosition,
+      forEnd: event.type == SelectionEventType.endEdgeUpdate,
+    );
+    if (event.type == SelectionEventType.endEdgeUpdate) {
+      return currentSelectionEndIndex == -1
+          ? _initSelection(event, isEnd: true)
+          : _adjustSelection(event, isEnd: true);
+    }
+    return currentSelectionStartIndex == -1
+        ? _initSelection(event, isEnd: false)
+        : _adjustSelection(event, isEnd: false);
+  }
+}
+
+class _RichText extends StatelessWidget {
+  const _RichText({
+    this.textKey,
+    required this.text,
+    required this.textAlign,
+    this.textDirection,
+    required this.softWrap,
+    required this.overflow,
+    required this.textScaler,
+    this.maxLines,
+    this.locale,
+    this.strutStyle,
+    required this.textWidthBasis,
+    this.textHeightBehavior,
+    required this.selectionColor,
+  });
+
+  final GlobalKey? textKey;
+  final InlineSpan text;
+  final TextAlign textAlign;
+  final TextDirection? textDirection;
+  final bool softWrap;
+  final TextOverflow overflow;
+  final TextScaler textScaler;
+  final int? maxLines;
+  final Locale? locale;
+  final StrutStyle? strutStyle;
+  final TextWidthBasis textWidthBasis;
+  final ui.TextHeightBehavior? textHeightBehavior;
+  final Color selectionColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final SelectionRegistrar? registrar = SelectionContainer.maybeOf(context);
+    return RichText(
+      key: textKey,
+      textAlign: textAlign,
+      textDirection: textDirection,
+      locale: locale,
+      softWrap: softWrap,
+      overflow: overflow,
+      textScaler: textScaler,
+      maxLines: maxLines,
+      strutStyle: strutStyle,
+      textWidthBasis: textWidthBasis,
+      textHeightBehavior: textHeightBehavior,
+      selectionRegistrar: registrar,
+      selectionColor: selectionColor,
+      text: text,
+    );
   }
 }
 
@@ -4017,13 +4884,16 @@ class RichText extends MultiChildRenderObjectWidget {
   })  : assert(maxLines == null || maxLines > 0),
         assert(selectionRegistrar == null || selectionColor != null),
         assert(
-            textScaleFactor == 1.0 ||
-                identical(textScaler, TextScaler.noScaling),
-            'Use textScaler instead.'),
+          textScaleFactor == 1.0 || identical(textScaler, TextScaler.noScaling),
+          'Use textScaler instead.',
+        ),
         textScaler = _effectiveTextScalerFrom(textScaler, textScaleFactor),
         super(
-            children: WidgetSpan.extractFromInlineSpan(
-                text, _effectiveTextScalerFrom(textScaler, textScaleFactor)));
+          children: WidgetSpan.extractFromInlineSpan(
+            text,
+            _effectiveTextScalerFrom(textScaler, textScaleFactor),
+          ),
+        );
 
   static TextScaler _effectiveTextScalerFrom(
       TextScaler textScaler, double textScaleFactor) {
@@ -4170,27 +5040,43 @@ class RichText extends MultiChildRenderObjectWidget {
         defaultValue: TextAlign.start));
     properties.add(EnumProperty<TextDirection>('textDirection', textDirection,
         defaultValue: null));
-    properties.add(FlagProperty('softWrap',
+    properties.add(
+      FlagProperty(
+        'softWrap',
         value: softWrap,
         ifTrue: 'wrapping at box width',
         ifFalse: 'no wrapping except at line break characters',
-        showName: true));
-    properties.add(EnumProperty<TextOverflow>('overflow', overflow,
-        defaultValue: TextOverflow.clip));
-    properties.add(DiagnosticsProperty<TextScaler>('textScaler', textScaler,
-        defaultValue: TextScaler.noScaling));
+        showName: true,
+      ),
+    );
+    properties.add(
+      EnumProperty<TextOverflow>('overflow', overflow,
+          defaultValue: TextOverflow.clip),
+    );
+    properties.add(
+      DiagnosticsProperty<TextScaler>('textScaler', textScaler,
+          defaultValue: TextScaler.noScaling),
+    );
     properties.add(IntProperty('maxLines', maxLines, ifNull: 'unlimited'));
-    properties.add(EnumProperty<TextWidthBasis>(
-        'textWidthBasis', textWidthBasis,
-        defaultValue: TextWidthBasis.parent));
+    properties.add(
+      EnumProperty<TextWidthBasis>(
+        'textWidthBasis',
+        textWidthBasis,
+        defaultValue: TextWidthBasis.parent,
+      ),
+    );
     properties.add(StringProperty('text', text.toPlainText()));
     properties
         .add(DiagnosticsProperty<Locale>('locale', locale, defaultValue: null));
     properties.add(DiagnosticsProperty<StrutStyle>('strutStyle', strutStyle,
         defaultValue: null));
-    properties.add(DiagnosticsProperty<TextHeightBehavior>(
-        'textHeightBehavior', textHeightBehavior,
-        defaultValue: null));
+    properties.add(
+      DiagnosticsProperty<TextHeightBehavior>(
+        'textHeightBehavior',
+        textHeightBehavior,
+        defaultValue: null,
+      ),
+    );
   }
 }
 
@@ -4343,14 +5229,6 @@ class FittedBox extends SingleChildRenderObjectWidget {
 /// using the `cacheWidth` and `cacheHeight` parameters, a 100-fold reduction in
 /// memory usage.
 ///
-/// ### Web considerations
-///
-/// In the case where a network image is used on the Web platform, the
-/// `cacheWidth` and `cacheHeight` parameters are only supported when the
-/// application is running with the CanvasKit renderer. When the application is
-/// using the HTML renderer, the web engine delegates image decoding of network
-/// images to the Web, which does not support custom decode sizes.
-///
 /// ## Custom image providers
 ///
 /// {@tool dartpad}
@@ -4368,14 +5246,17 @@ class FittedBox extends SingleChildRenderObjectWidget {
 ///    material application (especially if the image is in a [Material] and will
 ///    have an [InkWell] on top of it).
 ///  * [Image](dart-ui/Image-class.html), the class in the [dart:ui] library.
-///  * Cookbook: [Display images from the internet](https://flutter.dev/docs/cookbook/images/network-image)
-///  * Cookbook: [Work with cached images](https://flutter.dev/docs/cookbook/images/cached-images)
-///  * Cookbook: [Fade in images with a placeholder](https://flutter.dev/docs/cookbook/images/fading-in-images)
+///  * Cookbook: [Display images from the internet](https://docs.flutter.dev/cookbook/images/network-image)
+///  * Cookbook: [Fade in images with a placeholder](https://docs.flutter.dev/cookbook/images/fading-in-images)
 class Image extends StatefulWidget {
   /// Creates a widget that displays an image.
   ///
   /// To show an image from the network or from an asset bundle, consider using
   /// [Image.network] and [Image.asset] respectively.
+  ///
+  /// The `scale` argument specifies the linear scale factor for drawing this
+  /// image at its intended size and applies to both the width and the height.
+  /// {@macro flutter.painting.imageInfo.scale}
   ///
   /// Either the [width] and [height] arguments should be specified, or the
   /// widget should be placed in a context that sets tight layout constraints.
@@ -4407,7 +5288,7 @@ class Image extends StatefulWidget {
     this.matchTextDirection = false,
     this.gaplessPlayback = false,
     this.isAntiAlias = false,
-    this.filterQuality = FilterQuality.low,
+    this.filterQuality = FilterQuality.medium,
   });
 
   /// Creates a widget that displays an [ImageStream] obtained from the network.
@@ -4416,6 +5297,10 @@ class Image extends StatefulWidget {
   /// widget should be placed in a context that sets tight layout constraints.
   /// Otherwise, the image dimensions will change as the image is loaded, which
   /// will result in ugly layout changes.
+  ///
+  /// The `scale` argument specifies the linear scale factor for drawing this
+  /// image at its intended size and applies to both the width and the height.
+  /// {@macro flutter.painting.imageInfo.scale}
   ///
   /// All network images are cached regardless of HTTP headers.
   ///
@@ -4435,6 +5320,40 @@ class Image extends StatefulWidget {
   /// In the case where the network image is on the Web platform, the [cacheWidth]
   /// and [cacheHeight] parameters are ignored as the web engine delegates
   /// image decoding to the web which does not support custom decode sizes.
+  ///
+  /// ### Same-origin policy on Web
+  ///
+  /// Due to browser restriction on Cross-Origin Resource Sharing (CORS),
+  /// Flutter on the Web platform can not fetch images from other origins
+  /// (domain, scheme, or port) than the origin that hosts the app, unless the
+  /// image hosting origin explicitly allows so. CORS errors can be resolved
+  /// by configuring the image hosting server. More information can be
+  /// found at Mozilla's introduction on
+  /// [same-origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy)
+  /// and
+  /// [CORS errors](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS/Errors).
+  ///
+  /// If it's not possible to configure the host, such as when images are hosted
+  /// on a CDN or from arbitrary URLs, the app can set the
+  /// `webHtmlElementStrategy` parameter of [Image.network] to display the image
+  /// in an HTML element, which bypasses the same-origin policy.
+  ///
+  /// The HTML element is placed in a platform view, and therefore has the
+  /// following drawbacks:
+  ///
+  ///  * Suboptimal performance.
+  ///  * Can't be captured by screenshot widgets.
+  ///  * The `headers` argument must be null or empty.
+  ///  * Some image options are ignored, including [opacity], [colorBlendMode],
+  ///    [repeat], filtering, and blurring.
+  ///
+  /// By default, this feature is turned off ([WebHtmlElementStrategy.never]).
+  ///
+  /// ### Android Permissions
+  ///
+  /// Images fetched from the network require the internet permission.
+  /// Ensure that all AndroidMainifest.xml variants (especially release) have the internet permission.
+  /// See https://docs.flutter.dev/data-and-backend/networking for more information.
   Image.network(
     String src, {
     super.key,
@@ -4455,17 +5374,31 @@ class Image extends StatefulWidget {
     this.centerSlice,
     this.matchTextDirection = false,
     this.gaplessPlayback = false,
-    this.filterQuality = FilterQuality.low,
+    this.filterQuality = FilterQuality.medium,
     this.isAntiAlias = false,
     Map<String, String>? headers,
     int? cacheWidth,
     int? cacheHeight,
-  })  : image = ResizeImage.resizeIfNeeded(cacheWidth, cacheHeight,
-            NetworkImage(src, scale: scale, headers: headers)),
+    WebHtmlElementStrategy webHtmlElementStrategy =
+        WebHtmlElementStrategy.never,
+  })  : image = ResizeImage.resizeIfNeeded(
+          cacheWidth,
+          cacheHeight,
+          NetworkImage(
+            src,
+            scale: scale,
+            headers: headers,
+            webHtmlElementStrategy: webHtmlElementStrategy,
+          ),
+        ),
         assert(cacheWidth == null || cacheWidth > 0),
         assert(cacheHeight == null || cacheHeight > 0);
 
   /// Creates a widget that displays an [ImageStream] obtained from a [File].
+  ///
+  /// The `scale` argument specifies the linear scale factor for drawing this
+  /// image at its intended size and applies to both the width and the height.
+  /// {@macro flutter.painting.imageInfo.scale}
   ///
   /// Either the [width] and [height] arguments should be specified, or the
   /// widget should be placed in a context that sets tight layout constraints.
@@ -4513,11 +5446,10 @@ class Image extends StatefulWidget {
     this.matchTextDirection = false,
     this.gaplessPlayback = false,
     this.isAntiAlias = false,
-    this.filterQuality = FilterQuality.low,
+    this.filterQuality = FilterQuality.medium,
     int? cacheWidth,
     int? cacheHeight,
-  })  :
-        // FileImage is not supported on Flutter Web therefore neither this method.
+  })  : // FileImage is not supported on Flutter Web therefore neither this method.
         assert(
           !kIsWeb,
           'Image.file is not supported on Flutter Web. '
@@ -4547,6 +5479,10 @@ class Image extends StatefulWidget {
   ///
   /// If the `bundle` argument is omitted or null, then the
   /// [DefaultAssetBundle] will be used.
+  ///
+  /// The `scale` argument specifies the linear scale factor for drawing this
+  /// image at its intended size and applies to both the width and the height.
+  /// {@macro flutter.painting.imageInfo.scale}
   ///
   /// By default, the pixel-density-aware asset resolution will be attempted. In
   /// addition:
@@ -4650,7 +5586,7 @@ class Image extends StatefulWidget {
   ///    omitted.
   ///  * [ExactAssetImage], which is used to implement the behavior when the
   ///    scale is present.
-  ///  * <https://flutter.dev/assets-and-images/>, an introduction to assets in
+  ///  * <https://docs.flutter.dev/ui/assets/assets-and-images>, an introduction to assets in
   ///    Flutter.
   Image.asset(
     String name, {
@@ -4674,7 +5610,7 @@ class Image extends StatefulWidget {
     this.gaplessPlayback = false,
     this.isAntiAlias = false,
     String? package,
-    this.filterQuality = FilterQuality.low,
+    this.filterQuality = FilterQuality.medium,
     int? cacheWidth,
     int? cacheHeight,
   })  : image = ResizeImage.resizeIfNeeded(
@@ -4737,11 +5673,14 @@ class Image extends StatefulWidget {
     this.matchTextDirection = false,
     this.gaplessPlayback = false,
     this.isAntiAlias = false,
-    this.filterQuality = FilterQuality.low,
+    this.filterQuality = FilterQuality.medium,
     int? cacheWidth,
     int? cacheHeight,
   })  : image = ResizeImage.resizeIfNeeded(
-            cacheWidth, cacheHeight, MemoryImage(bytes, scale: scale)),
+          cacheWidth,
+          cacheHeight,
+          MemoryImage(bytes, scale: scale),
+        ),
         loadingBuilder = null,
         assert(cacheWidth == null || cacheWidth > 0),
         assert(cacheHeight == null || cacheHeight > 0);
@@ -4757,6 +5696,9 @@ class Image extends StatefulWidget {
   /// if it becomes available asynchronously). Callers might use this builder to
   /// add effects to the image (such as fading the image in when it becomes
   /// available) or to display a placeholder widget while the image is loading.
+  ///
+  /// For more information on how to interpret the arguments that are passed to
+  /// this builder, see the documentation on [ImageFrameBuilder].
   ///
   /// To have finer-grained control over the way that an image's loading
   /// progress is communicated to the user, see [loadingBuilder].
@@ -4918,6 +5860,8 @@ class Image extends StatefulWidget {
   /// improve the rendered image quality in this case. Pixels may be misaligned
   /// with the screen pixels as a result of transforms or scaling.
   ///
+  /// Defaults to [FilterQuality.medium].
+  ///
   /// See also:
   ///
   ///  * [FilterQuality], the enum containing all possible filter quality
@@ -5062,15 +6006,18 @@ class Image extends StatefulWidget {
     properties.add(EnumProperty<BlendMode>('colorBlendMode', colorBlendMode,
         defaultValue: null));
     properties.add(EnumProperty<BoxFit>('fit', fit, defaultValue: null));
-    properties.add(DiagnosticsProperty<AlignmentGeometry>(
-        'alignment', alignment,
-        defaultValue: null));
+    properties.add(
+      DiagnosticsProperty<AlignmentGeometry>('alignment', alignment,
+          defaultValue: null),
+    );
     properties.add(EnumProperty<ImageRepeat>('repeat', repeat,
         defaultValue: ImageRepeat.noRepeat));
     properties.add(DiagnosticsProperty<Rect>('centerSlice', centerSlice,
         defaultValue: null));
-    properties.add(FlagProperty('matchTextDirection',
-        value: matchTextDirection, ifTrue: 'match text direction'));
+    properties.add(
+      FlagProperty('matchTextDirection',
+          value: matchTextDirection, ifTrue: 'match text direction'),
+    );
     properties.add(
         StringProperty('semanticLabel', semanticLabel, defaultValue: null));
     properties.add(DiagnosticsProperty<bool>(
@@ -5162,13 +6109,14 @@ class _ImageState extends State<Image> with WidgetsBindingObserver {
       context: _scrollAwareContext,
       imageProvider: widget.image,
     );
-    final ImageStream newStream =
-        provider.resolve(createLocalImageConfiguration(
-      context,
-      size: widget.width != null && widget.height != null
-          ? Size(widget.width!, widget.height!)
-          : null,
-    ));
+    final ImageStream newStream = provider.resolve(
+      createLocalImageConfiguration(
+        context,
+        size: widget.width != null && widget.height != null
+            ? Size(widget.width!, widget.height!)
+            : null,
+      ),
+    );
     _updateSourceStream(newStream);
   }
 
@@ -5222,8 +6170,10 @@ class _ImageState extends State<Image> with WidgetsBindingObserver {
 
   void _replaceImage({required ImageInfo? info}) {
     final ImageInfo? oldImageInfo = _imageInfo;
-    SchedulerBinding.instance
-        .addPostFrameCallback((_) => oldImageInfo?.dispose());
+    SchedulerBinding.instance.addPostFrameCallback(
+      (_) => oldImageInfo?.dispose(),
+      debugLabel: 'Image.disposeOldInfo',
+    );
     _imageInfo = info;
   }
 
@@ -5287,6 +6237,26 @@ class _ImageState extends State<Image> with WidgetsBindingObserver {
       _completerHandle = _imageStream!.completer!.keepAlive();
     }
 
+    // It's almost time to remove the last listener, which triggers the
+    // disposal. But before that, add an ephemeral listener to potentially
+    // suppress errors.
+    //
+    // Reason: When an app provides an `Image` widget with an `errorBuilder`, it
+    // expects the widget to never report errors through `FlutterError` in any
+    // cases. This is hard if the stream fails after the disposal, because an
+    // image stream must have no listeners to be disposed, which then has
+    // nothing to suppress the errors. This is solve with the help of an
+    // ephemeral listener, which also suppresses the error but does not hinder
+    // disposal. For more details, see
+    // https://github.com/flutter/flutter/issues/97077 .
+    if (_imageStream!.completer != null && widget.errorBuilder != null) {
+      _imageStream!.completer!.addEphemeralErrorListener((
+        Object exception,
+        StackTrace? stackTrace,
+      ) {
+        // Intentionally blank.
+      });
+    }
     _imageStream!.removeListener(_getListener());
     _isListeningToStream = false;
   }
@@ -5295,11 +6265,7 @@ class _ImageState extends State<Image> with WidgetsBindingObserver {
     return Stack(
       alignment: Alignment.center,
       children: <Widget>[
-        const Positioned.fill(
-          child: Placeholder(
-            color: Color(0xCF8D021F),
-          ),
-        ),
+        const Positioned.fill(child: Placeholder(color: Color(0xCF8D021F))),
         Padding(
           padding: const EdgeInsets.all(4.0),
           child: FittedBox(
@@ -5307,11 +6273,8 @@ class _ImageState extends State<Image> with WidgetsBindingObserver {
               '$error',
               textAlign: TextAlign.center,
               textDirection: TextDirection.ltr,
-              style: const TextStyle(
-                shadows: <Shadow>[
-                  Shadow(blurRadius: 1.0),
-                ],
-              ),
+              style:
+                  const TextStyle(shadows: <Shadow>[Shadow(blurRadius: 1.0)]),
             ),
           ),
         ),
@@ -5330,28 +6293,45 @@ class _ImageState extends State<Image> with WidgetsBindingObserver {
       }
     }
 
-    Widget result = RawImage(
-      // Do not clone the image, because RawImage is a stateless wrapper.
-      // The image will be disposed by this state object when it is not needed
-      // anymore, such as when it is unmounted or when the image stream pushes
-      // a new image.
-      image: _imageInfo?.image,
-      debugImageLabel: _imageInfo?.debugLabel,
-      width: widget.width,
-      height: widget.height,
-      scale: _imageInfo?.scale ?? 1.0,
-      color: widget.color,
-      opacity: widget.opacity,
-      colorBlendMode: widget.colorBlendMode,
-      fit: widget.fit,
-      alignment: widget.alignment,
-      repeat: widget.repeat,
-      centerSlice: widget.centerSlice,
-      matchTextDirection: widget.matchTextDirection,
-      invertColors: _invertColors,
-      isAntiAlias: widget.isAntiAlias,
-      filterQuality: widget.filterQuality,
-    );
+    late Widget result;
+    if (_imageInfo case final WebImageInfo webImage) {
+      // TODO(harryterkelsen): Support the remaining properties that are
+      // supported by `RawImage` but not `RawWebImage`. See the following issue
+      // above for a discussion of the missing properties and suggestions for
+      // how they can be implemented, https://github.com/flutter/flutter/issues/159565.
+      result = RawWebImage(
+        image: webImage,
+        debugImageLabel: _imageInfo?.debugLabel,
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+        alignment: widget.alignment,
+        matchTextDirection: widget.matchTextDirection,
+      );
+    } else {
+      result = RawImage(
+        // Do not clone the image, because RawImage is a stateless wrapper.
+        // The image will be disposed by this state object when it is not needed
+        // anymore, such as when it is unmounted or when the image stream pushes
+        // a new image.
+        image: _imageInfo?.image,
+        debugImageLabel: _imageInfo?.debugLabel,
+        width: widget.width,
+        height: widget.height,
+        scale: _imageInfo?.scale ?? 1.0,
+        color: widget.color,
+        opacity: widget.opacity,
+        colorBlendMode: widget.colorBlendMode,
+        fit: widget.fit,
+        alignment: widget.alignment,
+        repeat: widget.repeat,
+        centerSlice: widget.centerSlice,
+        matchTextDirection: widget.matchTextDirection,
+        invertColors: _invertColors,
+        isAntiAlias: widget.isAntiAlias,
+        filterQuality: widget.filterQuality,
+      );
+    }
 
     if (!widget.excludeFromSemantics) {
       result = Semantics(

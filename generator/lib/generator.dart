@@ -37,9 +37,18 @@ class Generator {
     _buffer.writeln('import \'package:flutter/scheduler.dart\';');
     _buffer.writeln('import \'package:flutter/widgets.dart\' as widgets;');
     _buffer.writeln(
-        'import \'package:flutter/rendering.dart\' show SelectionRegistrar;');
+        'import \'package:flutter/rendering.dart\' show SelectionRegistrar, OverflowBoxFit, '
+        'SelectionResult, SelectionEvent, SelectionGeometry, Selectable, '
+        'SelectionEdgeUpdateEvent, SelectParagraphSelectionEvent, TextGranularity, '
+        'SelectedContentRange, SelectionEventType, ClearSelectionEvent;');
     _buffer.writeln('import \'dart:ui\' as ui;');
+    _buffer.writeln('import \'dart:math\' show min, max;');
     _buffer.writeln('import \'dart:io\' show File;');
+    // Conditional imports for platform-specific Image/Web support
+    _buffer.writeln("import 'package:flutter/src/painting/_web_image_info_io.dart'");
+    _buffer.writeln("    if (dart.library.js_interop) 'package:flutter/src/painting/_web_image_info_web.dart';");
+    _buffer.writeln("import 'package:flutter/src/widgets/_web_image_io.dart'");
+    _buffer.writeln("    if (dart.library.js_interop) 'package:flutter/src/widgets/_web_image_web.dart';");
 
     _buffer.writeln('export \'package:flutter/widgets.dart\' hide $classes;');
     _buffer.writeln('import \'../forked/render_flex.dart\';');
@@ -47,6 +56,10 @@ class Generator {
     _buffer.writeln('import \'../forked/render_paragraph.dart\';');
     _buffer.writeln('import \'../forked/render_fitted_box.dart\';');
     _buffer.writeln('import \'../forked/raw_image.dart\';');
+
+    // Constants and typedefs needed for Text selection support
+    _buffer.writeln('const double _kSelectableVerticalComparingThreshold = 3.0;');
+    _buffer.writeln('typedef _SelectionInfo = ({int contentLength, SelectedContentRange? range});');
 
     for (final c in contents.classes) {
       _buffer.writeln();

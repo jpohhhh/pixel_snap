@@ -175,9 +175,29 @@ class Parser {
     contents.write(await _elementToString(type.element, includeComments: true));
     if (type.element.name == 'Image') {
       final cu = type.element.enclosingElement;
-      final state = cu.getClass("_ImageState");
-      if (state != null) {
-        contents.write(await _elementToString(state, includeComments: true));
+      // Copy private helper classes needed for Image
+      for (final name in [
+        '_ImageState',
+      ]) {
+        final helper = cu.getClass(name);
+        if (helper != null) {
+          contents.write(await _elementToString(helper, includeComments: true));
+        }
+      }
+    }
+    if (type.element.name == 'Text') {
+      final cu = type.element.enclosingElement;
+      // Copy private helper classes needed for Text selection
+      for (final name in [
+        '_SelectableTextContainer',
+        '_SelectableTextContainerState', 
+        '_SelectableTextContainerDelegate',
+        '_RichText',
+      ]) {
+        final helper = cu.getClass(name);
+        if (helper != null) {
+          contents.write(await _elementToString(helper, includeComments: true));
+        }
       }
     }
     _forkedClasses.add(

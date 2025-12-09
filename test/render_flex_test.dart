@@ -384,7 +384,8 @@ void main() {
           '   mainAxisAlignment: start\n'
           '   mainAxisSize: max\n'
           '   crossAxisAlignment: center\n'
-          '   verticalDirection: down\n',
+          '   verticalDirection: down\n'
+          '   spacing: 0.0\n',
         ),
       );
     });
@@ -920,7 +921,8 @@ void main() {
       expect(box3.size, const Size(100.0, 100.0));
     });
 
-    test('Intrinsics throw if alignment is baseline', () {
+    // Flutter 3.38: Baseline alignment intrinsics now return 0.0 instead of throwing
+    test('Intrinsics return 0.0 if alignment is baseline', () {
       final RenderDecoratedBox box = RenderDecoratedBox(
         decoration: const BoxDecoration(),
       );
@@ -939,16 +941,11 @@ void main() {
             maxHeight: 200.0,
           ));
 
-      final Matcher cannotCalculateIntrinsics = throwsA(isAssertionError.having(
-        (AssertionError e) => e.message,
-        'message',
-        'Intrinsics are not available for CrossAxisAlignment.baseline.',
-      ));
-
-      expect(() => flex.getMaxIntrinsicHeight(100), cannotCalculateIntrinsics);
-      expect(() => flex.getMinIntrinsicHeight(100), cannotCalculateIntrinsics);
-      expect(() => flex.getMaxIntrinsicWidth(100), cannotCalculateIntrinsics);
-      expect(() => flex.getMinIntrinsicWidth(100), cannotCalculateIntrinsics);
+      // In Flutter 3.38+, baseline intrinsics return 0.0 instead of throwing
+      expect(flex.getMaxIntrinsicHeight(100), equals(0.0));
+      expect(flex.getMinIntrinsicHeight(100), equals(0.0));
+      expect(flex.getMaxIntrinsicWidth(100), equals(0.0));
+      expect(flex.getMinIntrinsicWidth(100), equals(0.0));
     });
 
     test(
